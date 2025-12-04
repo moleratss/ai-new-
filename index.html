@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Stylist: The Free Outfit Planner</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        /* Custom scrollbar for better aesthetics */
+        .closet-scroll::-webkit-scrollbar { width: 4px; height: 8px; }
+        .closet-scroll::-webkit-scrollbar-thumb { background-color: #a78bfa; border-radius: 4px; }
+        .closet-scroll::-webkit-scrollbar-track { background-color: #f3f4f6; }
+
+        /* Custom style for the loading spinner */
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: #ffffff;
+            width: 32px;
+            height: 32px;
+            animation: spin 1s ease-in-out infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen font-sans antialiased text-gray-800">
+
+    <div class="max-w-4xl mx-auto p-4 md:p-8">
+        <!-- Header -->
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-extrabold text-violet-700">AI Stylist Pro</h1>
+            <p class="mt-2 text-gray-500">Snap your clothes, get a perfect fit and styling steps.</p>
+        </header>
+
+        <!-- Loading Indicator and Messages -->
+        <div id="loadingIndicator" class="hidden bg-violet-600 p-4 rounded-lg shadow-xl mb-6 flex items-center justify-center text-white">
+            <div class="spinner mr-3"></div>
+            <span id="loadingMessage" class="font-medium">Initializing application...</span>
+        </div>
+        <div id="statusMessage" class="hidden text-sm p-3 rounded-lg text-red-700 bg-red-100 mb-6"></div>
+
+        <!-- CLOSET MANAGEMENT SECTION -->
+        <section class="bg-white p-6 rounded-xl shadow-lg mb-8">
+            <h2 class="text-2xl font-semibold text-gray-700 mb-4 flex items-center">
+                <i data-lucide="wardrobe" class="w-6 h-6 mr-2 text-violet-500"></i>
+                Your Digital Closet
+            </h2>
+
+            <!-- User ID Display (Mandatory for multi-user apps) -->
+            <div class="text-xs text-gray-500 mb-4 p-2 bg-gray-100 rounded-lg">
+                <span class="font-semibold text-gray-600">User ID:</span> <span id="userIdDisplay" class="break-all">...loading...</span>
+            </div>
+
+            <!-- Upload/Add Button -->
+            <label for="imageUpload" class="block w-full text-center py-3 bg-violet-500 text-white font-bold rounded-lg cursor-pointer hover:bg-violet-600 transition-colors shadow-md shadow-violet-200">
+                <i data-lucide="camera" class="w-5 h-5 inline mr-2"></i>
+                Add New Clothing Item (Max 3)
+            </label>
+            <input type="file" id="imageUpload" accept="image/*" multiple class="hidden" onchange="handleImageUpload(event)">
+
+            <!-- Closet Items Display -->
+            <div id="closetItems" class="closet-scroll mt-4 flex overflow-x-auto space-x-4 p-2 border border-gray-200 rounded-lg min-h-[120px]">
+                <p id="emptyMessage" class="text-gray-400 text-sm italic m-auto">Upload 2-3 items to generate an outfit!</p>
+            </div>
+        </section>
+
+        <!-- OUTFIT GENERATION SECTION -->
+        <section class="bg-white p-6 rounded-xl shadow-lg mb-8">
+            <h2 class="text-2xl font-semibold text-gray-700 mb-4 flex items-center">
+                <i data-lucide="sparkles" class="w-6 h-6 mr-2 text-violet-500"></i>
+                AI Styling Assistant
+            </h2>
+
+            <button id="generateButton" onclick="generateOutfit()" disabled class="w-full py-4 bg-emerald-500 text-white font-bold rounded-xl text-lg hover:bg-emerald-600 transition-colors shadow-lg shadow-emerald-200 disabled:opacity-50 disabled:cursor-not-allowed">
+                Generate Outfit & Styling Steps
+            </button>
+            <p id="requirementMessage" class="mt-3 text-sm text-center text-red-500 hidden">Please upload at least 2 items to generate an outfit.</p>
+        </section>
+
+        <!-- RESULTS SECTION -->
+        <section class="bg-white p-6 rounded-xl shadow-lg" id="resultsSection">
+            <h2 class="text-2xl font-semibold text-gray-700 mb-4 flex items-center">
+                <i data-lucide="t-shirt" class="w-6 h-6 mr-2 text-violet-500"></i>
+                Recommended Fit & Steps
+            </h2>
+            <div id="outfitResults" class="min-h-[100px] bg-gray-50 p-4 rounded-lg border border-gray-200 text-gray-600">
+                <p class="italic text-gray-400">Your AI-generated outfit and styling instructions will appear here.</p>
+            </div>
+        </section>
+
+    </div>
+
+    <!-- Firebase Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection, query, serverTimestamp, deleteDoc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables for Firebase and App State
+        window.app;
+        window.db;
+        window.auth;
+        window.userId = null;
+        window.isAuthReady = false;
+        window.clothingItems = []; // Local mirror of the user's closet
+
+        // Display logging for debugging (optional, but good practice)
+        setLogLevel('Debug');
+
+        // Initial Firebase Setup
+        const initializeFirebase = async () => {
+            try {
+                const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+                window.app = initializeApp(firebaseConfig);
+                window.db = getFirestore(window.app);
+                window.auth = getAuth(window.app);
+
+                // Check for custom auth token and sign in, otherwise sign in anonymously
+                const token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+                onAuthStateChanged(window.auth, async (user) => {
+                    if (user) {
+                        window.userId = user.uid;
+                        document.getElementById('userIdDisplay').textContent = user.uid;
+                        window.isAuthReady = true;
+                        loadCloset();
+                    } else {
+                        // Attempt silent sign-in if no user is found
+                        if (token) {
+                             await signInWithCustomToken(window.auth, token);
+                        } else {
+                            await signInAnonymously(window.auth);
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error("Firebase Initialization Error:", error);
+                document.getElementById('statusMessage').textContent = `Initialization error: ${error.message}`;
+                document.getElementById('statusMessage').classList.remove('hidden');
+            }
+        };
+
+        // --- Firestore Operations ---
+
+        // Helper to get the correct collection path
+        const getClosetCollectionRef = () => {
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            if (!window.userId) throw new Error("User not authenticated.");
+            // Private data storage path: /artifacts/{appId}/users/{userId}/{collectionName}
+            return collection(window.db, `artifacts/${appId}/users/${window.userId}/clothes`);
+        };
+
+        // Load clothing items using a real-time listener (onSnapshot)
+        const loadCloset = () => {
+            if (!window.isAuthReady || !window.userId) return;
+
+            const q = query(getClosetCollectionRef());
+
+            onSnapshot(q, (snapshot) => {
+                const items = [];
+                snapshot.forEach((doc) => {
+                    items.push({ id: doc.id, ...doc.data() });
+                });
+                window.clothingItems = items;
+                renderCloset();
+            }, (error) => {
+                console.error("Error loading closet:", error);
+                document.getElementById('statusMessage').textContent = `Error loading closet: ${error.message}`;
+                document.getElementById('statusMessage').classList.remove('hidden');
+            });
+        };
+
+        // Function to save a new item to Firestore
+        window.saveClothingItem = async (base64Image, category) => {
+            try {
+                showLoading("Saving item to your digital closet...");
+                const docRef = doc(getClosetCollectionRef()); // Use doc() without args to get a new ID
+
+                await setDoc(docRef, {
+                    base64Image: base64Image,
+                    category: category,
+                    createdAt: serverTimestamp(),
+                });
+
+                hideLoading();
+            } catch (error) {
+                console.error("Error saving item:", error);
+                document.getElementById('statusMessage').textContent = `Error saving item: ${error.message}`;
+                document.getElementById('statusMessage').classList.remove('hidden');
+                hideLoading();
+            }
+        };
+
+        // Function to delete an item
+        window.deleteClothingItem = async (id) => {
+            try {
+                showLoading("Removing item...");
+                const docRef = doc(getClosetCollectionRef(), id);
+                await deleteDoc(docRef);
+                hideLoading();
+            } catch (error) {
+                console.error("Error deleting item:", error);
+                document.getElementById('statusMessage').textContent = `Error deleting item: ${error.message}`;
+                document.getElementById('statusMessage').classList.remove('hidden');
+                hideLoading();
+            }
+        };
+
+
+        // --- UI Rendering and Helpers ---
+
+        const renderCloset = () => {
+            const container = document.getElementById('closetItems');
+            const generateButton = document.getElementById('generateButton');
+            const requirementMessage = document.getElementById('requirementMessage');
+            container.innerHTML = '';
+
+            if (window.clothingItems.length === 0) {
+                container.innerHTML = '<p id="emptyMessage" class="text-gray-400 text-sm italic m-auto">Upload 2-3 items to generate an outfit!</p>';
+                generateButton.disabled = true;
+                requirementMessage.classList.add('hidden');
+            } else {
+                window.clothingItems.forEach(item => {
+                    const itemDiv = document.createElement('div');
+                    itemDiv.className = 'flex-shrink-0 w-24 h-24 bg-gray-200 rounded-lg shadow-md relative overflow-hidden group';
+                    itemDiv.innerHTML = `
+                        <img src="${item.base64Image}" class="w-full h-full object-cover">
+                        <div class="absolute inset-0 bg-black bg-opacity-40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button onclick="window.deleteClothingItem('${item.id}')" class="text-white hover:text-red-400 transition-colors p-1" title="Remove item">
+                                <i data-lucide="x-circle" class="w-6 h-6"></i>
+                            </button>
+                        </div>
+                    `;
+                    container.appendChild(itemDiv);
+                });
+                // Re-render lucide icons
+                lucide.createIcons();
+
+                const itemCound = window.clothingItems.length;
+                if (itemCound >= 2 && itemCound <= 5) {
+                    generateButton.disabled = false;
+                    requirementMessage.classList.add('hidden');
+                } else {
+                    generateButton.disabled = true;
+                    requirementMessage.textContent = itemCound > 5
+                        ? "Please keep your closet items under 6 for best AI results."
+                        : "Please upload at least 2 items to generate an outfit.";
+                    requirementMessage.classList.remove('hidden');
+                }
+            }
+        };
+
+        window.showLoading = (message) => {
+            document.getElementById('loadingMessage').textContent = message;
+            document.getElementById('loadingIndicator').classList.remove('hidden');
+            document.getElementById('generateButton').disabled = true;
+        };
+
+        window.hideLoading = () => {
+            document.getElementById('loadingIndicator').classList.add('hidden');
+            const itemCound = window.clothingItems.length;
+            if (itemCound >= 2 && itemCound <= 5) {
+                document.getElementById('generateButton').disabled = false;
+            }
+        };
+        
+        // Function to resize and compress a Base64 image string to fit Firestore limits
+        const resizeImage = (base64Str, maxWidth = 512, maxHeight = 512, quality = 0.7) => {
+            return new Promise((resolve) => {
+                const img = new Image();
+                img.onload = () => {
+                    let width = img.width;
+                    let height = img.height;
+
+                    // Calculate the new dimensions while maintaining aspect ratio
+                    if (width > height) {
+                        if (width > maxWidth) {
+                            height *= maxWidth / width;
+                            width = maxWidth;
+                        }
+                    } else {
+                        if (height > maxHeight) {
+                            width *= maxHeight / height;
+                            height = maxHeight;
+                        }
+                    }
+
+                    const canvas = document.createElement('canvas');
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+
+                    // Re-encode as JPEG with lower quality (0.7)
+                    // This is the key step to reduce the file size below 1MB
+                    resolve(canvas.toDataURL('image/jpeg', quality));
+                };
+                img.src = base64Str;
+            });
+        };
+
+
+        // --- Image Handling and API Calls ---
+
+        window.handleImageUpload = async (event) => {
+            const files = event.target.files;
+            if (!files || files.length === 0) return;
+
+            const maxUploads = 3; // Limit uploads for API payload size/latency
+            let uploadedCount = 0;
+
+            for (let i = 0; i < Math.min(files.length, maxUploads); i++) {
+                const file = files[i];
+                if (window.clothingItems.length + uploadedCount >= 5) {
+                    // Stop if we hit the limit
+                    document.getElementById('statusMessage').textContent = "You have reached the maximum of 5 items for this simple closet.";
+                    document.getElementById('statusMessage').classList.remove('hidden');
+                    break;
+                }
+
+                showLoading(`Processing image ${uploadedCount + 1}...`);
+                
+                // Use a promise wrapper for FileReader
+                const originalBase64 = await new Promise(resolve => {
+                    const reader = new FileReader();
+                    reader.onload = (e) => resolve(e.target.result);
+                    reader.readAsDataURL(file);
+                });
+                
+                try {
+                    // 1. Resize and compress before saving to avoid the 1MB Firestore limit
+                    const compressedBase64 = await resizeImage(originalBase64);
+
+                    const category = file.name || "item";
+
+                    // 2. Save the compressed version
+                    await window.saveClothingItem(compressedBase64, category); 
+                    uploadedCount++;
+
+                } catch (e) {
+                    console.error("Image processing failed:", e);
+                    document.getElementById('statusMessage').textContent = `Image processing failed: ${e.message}. Please try a smaller image.`;
+                    document.getElementById('statusMessage').classList.remove('hidden');
+                    break; // Stop processing further files on error
+                }
+            }
+            // Clear input so same file can be uploaded again
+            event.target.value = null;
+            hideLoading();
+        };
+
+        window.generateOutfit = async () => {
+            if (window.clothingItems.length < 2) {
+                document.getElementById('statusMessage').textContent = "Please upload at least 2 items to generate an outfit.";
+                document.getElementById('statusMessage').classList.remove('hidden');
+                return;
+            }
+
+            const promptText = "Based on these available clothing items, please suggest one excellent, cohesive outfit combination. The combination should be practical and stylish. After suggesting the combination, you MUST provide a detailed, step-by-step guide on how to wear and style that specific outfit (e.g., layering, cuffing, accessorizing, shoe choice, etc.). Respond only with the outfit and the steps, formatted clearly.";
+
+            // 1. Build the contents array for the multimodal API call
+            const parts = [
+                { text: promptText }
+            ];
+
+            const clothingList = [];
+            window.clothingItems.forEach((item, index) => {
+                // Extract mimeType and data from the base64 string
+                const [metadata, base64Data] = item.base64Image.split(',');
+                const mimeTypeMatch = metadata.match(/data:(.*?);/);
+                const mimeType = mimeTypeMatch ? mimeTypeMatch[1] : 'image/jpeg'; // Default to jpeg if fails
+
+                parts.push({
+                    inlineData: {
+                        mimeType: mimeType,
+                        data: base64Data
+                    }
+                });
+                clothingList.push(`Item ${index + 1}: ${item.category}`);
+            });
+
+            const fullPrompt = `Here is the list of items provided: ${clothingList.join(', ')}. ${promptText}`;
+
+            // Replace the initial text part with the more detailed one
+            parts[0].text = fullPrompt;
+
+            const payload = {
+                contents: [{ role: "user", parts: parts }],
+                systemInstruction: {
+                    parts: [{ text: "You are a world-class fashion stylist AI. Analyze the user's provided clothing images and suggest a cohesive outfit with detailed styling steps." }]
+                }
+            };
+
+            const apiKey = "";
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+            const maxRetries = 3;
+            let attempt = 0;
+            let finalResult = null;
+
+            while (attempt < maxRetries) {
+                attempt++;
+                try {
+                    window.showLoading(`Thinking up the perfect outfit (Attempt ${attempt})...`);
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (response.ok) {
+                        const result = await response.json();
+                        const generatedText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+
+                        if (generatedText) {
+                            finalResult = generatedText;
+                            break;
+                        } else {
+                            throw new Error("AI response was empty or malformed.");
+                        }
+                    } else {
+                        const errorBody = await response.json();
+                        throw new Error(`API returned status ${response.status}: ${errorBody.error?.message || 'Unknown error'}`);
+                    }
+                } catch (error) {
+                    console.error(`Attempt ${attempt} failed:`, error);
+                    if (attempt < maxRetries) {
+                        const delay = Math.pow(2, attempt) * 1000; // Exponential backoff (2s, 4s)
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                    } else {
+                        document.getElementById('statusMessage').textContent = `Failed to generate outfit after ${maxRetries} attempts. The AI might be having trouble identifying the clothes. Try using clear, well-lit photos.`;
+                        document.getElementById('statusMessage').classList.remove('hidden');
+                        document.getElementById('outfitResults').innerHTML = '<p class="text-red-500">Failed to get outfit suggestion. Please check your network or try again later.</p>';
+                    }
+                }
+            }
+
+            window.hideLoading();
+
+            if (finalResult) {
+                // Display the result in a nicely formatted Markdown style
+                const formattedResult = finalResult
+                    .replace(/^##\s*Outfit Combination/gim, '<h3 class="text-xl font-bold text-violet-600 mb-2 mt-4">✨ Suggested Outfit</h3>')
+                    .replace(/^##\s*Styling Steps/gim, '<h3 class="text-xl font-bold text-violet-600 mb-2 mt-4">👟 Detailed Styling Steps</h3>')
+                    .replace(/^\*\s*(.*)/gim, '<li class="ml-4 list-disc">$1</li>') // Simple list conversion
+                    .replace(/###\s*(.*)/gim, '<h4 class="text-lg font-semibold text-gray-700 mt-3">$1</h4>')
+                    .replace(/\n\n/g, '<br><br>'); // Convert paragraphs
+
+                document.getElementById('outfitResults').innerHTML = `
+                    <div class="prose max-w-none text-gray-700">
+                        ${formattedResult}
+                    </div>
+                `;
+            }
+        };
+
+        // Initialize the application when the window loads
+        window.onload = () => {
+            // Create icons once the DOM is ready
+            lucide.createIcons();
+            initializeFirebase();
+        };
+
+    </script>
+</body>
+</html>
